@@ -1,0 +1,5 @@
+
+Alice Pythonista
+London
+Skills: Python, Django, PostgreSQL, AWS
+Experience: Senior Dev at TechCorp (5 years)

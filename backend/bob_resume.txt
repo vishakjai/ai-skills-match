@@ -1,0 +1,5 @@
+
+Bob Java
+Boston
+Skills: Java, Spring Boot, MySQL
+Experience: Junior Dev (1 year)
