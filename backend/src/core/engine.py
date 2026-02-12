@@ -675,22 +675,35 @@ async def calculate_match(candidate: CandidateProfile, jd: JobDescription) -> Ma
     mode = jd.job_metadata.work_mode
     
     if mode != "remote":
-        loc_verdict = await location_service.check_proximity(cand_loc, job_loc, mode)
-        
-        loc_status = "met"
-        if not loc_verdict.is_within_range:
-            loc_status = "not_met" if mode == "onsite" else "review_needed"
+        try:
+            loc_verdict = await location_service.check_proximity(cand_loc, job_loc, mode)
             
-        analysis_results.append(AnalysisSection(
-            title="Location",
-            status=loc_status,
-            summary=f"Distance: {loc_verdict.distance_estimate}",
-            details=[
-                f"Candidate: {cand_loc or 'Unknown'}",
-                f"Job: {job_loc or 'Unknown'} ({mode.title()})",
-                f"Analysis: {loc_verdict.reason}"
-            ]
-        ))
+            loc_status = "met"
+            if not loc_verdict.is_within_range:
+                loc_status = "not_met" if mode == "onsite" else "review_needed"
+                
+            analysis_results.append(AnalysisSection(
+                title="Location",
+                status=loc_status,
+                summary=f"Distance: {loc_verdict.distance_estimate}",
+                details=[
+                    f"Candidate: {cand_loc or 'Unknown'}",
+                    f"Job: {job_loc or 'Unknown'} ({mode.title()})",
+                    f"Analysis: {loc_verdict.reason}"
+                ]
+            ))
+        except Exception as e:
+            print(f"⚠️ Location Service failed: {e}")
+            analysis_results.append(AnalysisSection(
+                title="Location",
+                status="review_needed",
+                summary="Location check unavailable",
+                details=[
+                    f"Candidate: {cand_loc or 'Unknown'}",
+                    f"Job: {job_loc or 'Unknown'} ({mode.title()})",
+                    f"Error: {str(e)}"
+                ]
+            ))
     else:
          analysis_results.append(AnalysisSection(
             title="Location",

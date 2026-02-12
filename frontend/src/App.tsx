@@ -5,6 +5,7 @@ import { SkillRow } from './components/SkillRow';
 import { AnalysisCard } from './components/AnalysisCard';
 import { BatchDashboard } from './BatchDashboard';
 import { JDConfigurationView } from './JDConfigurationView';
+import { HistoryDashboard } from './HistoryDashboard';
 
 // Default Data for easy testing
 const DEFAULT_CANDIDATE_JSON = `{"id":"jane-doe","candidate_metadata":{"name":"Jane Doe","location":"Remote","links":["github.com/jane"]},"computed_stats":{"total_yoe":6.0,"avg_tenure_months":24,"management_experience_years":1},"timeline":[{"company":"TechCorp","title_raw":"Senior Engineer","start_date":"2021-01","end_date":"Present","extracted_skills":[{"skill_id":"java","context":"Backend API"},{"skill_id":"html5","context":"Frontend"},{"skill_id":"javascript","context":"Frontend"},{"skill_id":"git","context":"Version Control"}]}],"skills":[],"competencies":["Problem Solving","Communication"]}`;
@@ -12,7 +13,7 @@ const DEFAULT_CANDIDATE_JSON = `{"id":"jane-doe","candidate_metadata":{"name":"J
 const DEFAULT_JD_JSON = `{"id":"senior-engineer-real","job_metadata":{"title":"Senior Java Engineer","location":"New York (Hybrid)","clearance":"None"},"gating_rules":{"visa_sponsorship":true,"education_min":"Bachelors"},"requirements":[{"req_id":"r1","skill_id":"java","priority":"must_have","min_years":4},{"req_id":"r2","skill_id":"sql_server","priority":"must_have","min_years":3},{"req_id":"r3","skill_id":"database_design","priority":"must_have","min_years":3},{"req_id":"r4","skill_id":"html5","priority":"must_have","min_years":2},{"req_id":"r5","skill_id":"css3","priority":"must_have","min_years":2},{"req_id":"r6","skill_id":"javascript","priority":"must_have","min_years":2},{"req_id":"r7","skill_id":"git","priority":"must_have","min_years":3},{"req_id":"r8","skill_id":"rest_api","priority":"must_have","min_years":3},{"req_id":"r9","skill_id":"http","priority":"must_have","min_years":2}],"seniority_signals":{"target_level":"Senior","keywords_found":["Lead","Mentor"]},"competencies":[{"name":"Problem Solving","priority":"must_have"},{"name":"Code Quality","priority":"must_have"},{"name":"Communication","priority":"must_have"}]}`;
 
 function App() {
-  const [viewMode, setViewMode] = useState<'single' | 'batch'>('single');
+  const [viewMode, setViewMode] = useState<'single' | 'batch' | 'history'>('single');
   const [candidateStr, setCandidateStr] = useState(DEFAULT_CANDIDATE_JSON);
   const [jdStr, setJdStr] = useState(DEFAULT_JD_JSON);
 
@@ -131,6 +132,12 @@ function App() {
             >
               Batch Platform
             </button>
+            <button
+              onClick={() => setViewMode('history')}
+              className={"px-4 py-2 rounded-md text-sm font-bold transition-all " + (viewMode === 'history' ? "bg-purple-600 text-white shadow" : "text-slate-500 hover:text-slate-300")}
+            >
+              History
+            </button>
           </div>
 
           <div className="bg-slate-900/50 border border-emerald-500/30 rounded-lg px-4 py-2 text-sm text-emerald-400 font-mono flex items-center gap-2">
@@ -140,7 +147,9 @@ function App() {
         </div>
       </header>
 
-      {viewMode === 'batch' ? (
+      {viewMode === 'history' ? (
+        <HistoryDashboard />
+      ) : viewMode === 'batch' ? (
         <BatchDashboard />
       ) : (
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-10 animate-fade-in">

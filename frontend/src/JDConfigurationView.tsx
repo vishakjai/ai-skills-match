@@ -27,9 +27,13 @@ export const JDConfigurationView: React.FC<JDConfigurationViewProps> = ({ jd, on
     const handleReqChange = (id: string, updates: { level?: "junior" | "mid" | "senior"; isHardFilter?: boolean }) => {
         setLocalJD(prev => ({
             ...prev,
-            requirements: prev.requirements.map(req =>
-                req.req_id === id ? { ...req, ...updates } : req
-            )
+            requirements: prev.requirements.map(req => {
+                if (req.req_id !== id) return req;
+                const mapped: Partial<typeof req> = {};
+                if (updates.level !== undefined) mapped.level = updates.level;
+                if (updates.isHardFilter !== undefined) mapped.is_hard_filter = updates.isHardFilter;
+                return { ...req, ...mapped };
+            })
         }));
     };
 
@@ -48,7 +52,7 @@ export const JDConfigurationView: React.FC<JDConfigurationViewProps> = ({ jd, on
             skill_id: newSkillName.trim(), // In a real app we'd map this to ID
             priority: 'must_have' as const,
             level: 'mid' as const,
-            is_hard_filter: true,
+            is_hard_filter: false,
             min_years: 0
         };
 
@@ -164,7 +168,7 @@ export const JDConfigurationView: React.FC<JDConfigurationViewProps> = ({ jd, on
                         id={req.req_id}
                         skillName={req.skill_id || req.req_id}
                         level={req.level || 'mid'}
-                        isHardFilter={req.is_hard_filter ?? true}
+                        isHardFilter={req.is_hard_filter ?? false}
                         priority={req.priority}
                         onChange={handleReqChange}
                         onDelete={handleDeleteSkill}

@@ -2,6 +2,7 @@ import os
 import json
 from openai import AsyncOpenAI
 from src.core.models import JobDescription
+from src.utils.openai_logger import OpenAICallTimer
 
 class LLMExtractor:
     def __init__(self):
@@ -18,14 +19,17 @@ class LLMExtractor:
         print(f"🤖 LLM Extraction: Sending {len(text)} chars to GPT-4o for JD...")
         
         try:
+            messages = [
+                    {"role": "system", "content": "You are an expert HR Tech extraction engine. Extract the Job Description details into the requested JSON structure.\n\nCRITICAL INSTRUCTIONS:\n0. **VALIDATION**: First, verify if the input text contains **Job Requirements** or **Technical Skills**. If the input is just a list of skills (e.g. 'Required: Java, Python'), **MARK IT AS VALID (`is_valid=True`)**. Only set `is_valid=False` if the text is completely unrelated (e.g. a recipe, random conversation, weather report).\n1. **Metadata**: Extract Title, Location, and Work Mode. If Title is missing but skills are present, infer a generic title (e.g. 'Software Engineer') or leave null.\n2. **Gating Rules (`gating_rules`)**: \n   - `education_min`: Extract minimum degree. \n   - `visa_sponsorship`: True/False.\n3. **Requirements**: Break down into individual **HARD TECHNICAL SKILLS** only.\n   - `skill_id`: **MUST BE THE SKILL NAME** (e.g. 'Java', 'AWS').\n   - `priority`: 'must_have' by default, 'nice_to_have' if 'Preferred'.\n   - `is_hard_filter`: Set to `true` ONLY for skills the JD explicitly marks as absolute dealbreakers (e.g. 'must have', 'mandatory', 'non-negotiable'). Default is `false`.\n4. **Seniority**: Extract target level.\n5. **Competencies**: Extract soft skills."},
+                    {"role": "user", "content": text},
+            ]
+            timer = OpenAICallTimer(operation="extract_jd", model="gpt-4o-2024-08-06", messages=messages, extra={"response_format": "JobDescription"})
             response = await self.client.beta.chat.completions.parse(
                 model="gpt-4o-2024-08-06",
-                messages=[
-                    {"role": "system", "content": "You are an expert HR Tech extraction engine. Extract the Job Description details into the requested JSON structure.\n\nCRITICAL INSTRUCTIONS:\n0. **VALIDATION**: First, verify if the input text contains **Job Requirements** or **Technical Skills**. If the input is just a list of skills (e.g. 'Required: Java, Python'), **MARK IT AS VALID (`is_valid=True`)**. Only set `is_valid=False` if the text is completely unrelated (e.g. a recipe, random conversation, weather report).\n1. **Metadata**: Extract Title, Location, and Work Mode. If Title is missing but skills are present, infer a generic title (e.g. 'Software Engineer') or leave null.\n2. **Gating Rules (`gating_rules`)**: \n   - `education_min`: Extract minimum degree. \n   - `visa_sponsorship`: True/False.\n3. **Requirements**: Break down into individual **HARD TECHNICAL SKILLS** only.\n   - `skill_id`: **MUST BE THE SKILL NAME** (e.g. 'Java', 'AWS').\n   - `priority`: 'must_have' by default, 'nice_to_have' if 'Preferred'.\n4. **Seniority**: Extract target level.\n5. **Competencies**: Extract soft skills."},
-                    {"role": "user", "content": text},
-                ],
+                messages=messages,
                 response_format=JobDescription,
             )
+            timer.finish(response=response)
             
             result = response.choices[0].message.parsed
             
@@ -72,6 +76,7 @@ class LLMExtractor:
             
         except Exception as e:
             print(f"❌ LLM JD Extraction Failed: {e}")
+            timer.finish(error=e)
             raise e
 
     async def extract_resume(self, text: str) -> 'CandidateProfile':
@@ -83,14 +88,17 @@ class LLMExtractor:
         
         try:
             print("⏳ LLMExtractor: Calling OpenAI API...")
-            response = await self.client.beta.chat.completions.parse(
-                model="gpt-4o-2024-08-06",
-                messages=[
+            messages = [
                     {"role": "system", "content": "You are an expert Resume Parser. Your goal is to extract the candidate's profile into the requested JSON structure.\n\nCRITICAL INSTRUCTIONS:\n0. **VALIDATION**: First, verify if the input text is actually a **Resume/CV**. If it is unrelated text (e.g. a recipe, random article, or a Job Description), set `is_valid=False` and `parsing_error='Input does not appear to be a Resume'`. Stop extraction if invalid.\n1. **Technical Skills Section**: Always look for a 'Skills', 'Technical Skills', or 'Core Competencies' section. Create a 'SkillProfileEntry' for EVERY skill listed there, even if it doesn't appear in the Work Experience. Mark source as 'resume_skills_section'.\n2. **Timeline**: Construct a precise timeline of work experience. Infer skills used in each job based on the description.\n3. **Education**: Extract all educational qualifications (`education` list). Include Degree, Field of Study, Institution, and Year.\n4. **Normalization**: Normalize standard job titles (e.g. 'SDE II' -> 'Software Engineer').\n5. **Competencies**: Extract soft skills, behavioral traits, and professional attributes (e.g. 'Communication', 'Leadership') found in the Summary or Skills sections."},
                     {"role": "user", "content": text},
-                ],
+            ]
+            timer = OpenAICallTimer(operation="extract_resume", model="gpt-4o-2024-08-06", messages=messages, extra={"response_format": "CandidateProfile"})
+            response = await self.client.beta.chat.completions.parse(
+                model="gpt-4o-2024-08-06",
+                messages=messages,
                 response_format=CandidateProfile,
             )
+            timer.finish(response=response)
             
             result = response.choices[0].message.parsed
             if not result.id:
@@ -111,4 +119,5 @@ class LLMExtractor:
             print(f"❌ LLM Resume Extraction Failed: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
+            timer.finish(error=e)
             raise e

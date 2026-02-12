@@ -4,6 +4,7 @@ from openai import AsyncOpenAI
 from src.extraction.schemas.intelligence import TribunalVerdict
 from src.core.models import CandidateProfile, JobDescription
 from src.utils.toon import encode
+from src.utils.openai_logger import OpenAICallTimer
 
 class TribunalService:
     def __init__(self):
@@ -75,19 +76,23 @@ class TribunalService:
         """
 
         try:
-            completion = await self.client.beta.chat.completions.parse(
-                model="gpt-4o", # Use smart model for reasoning
-                messages=[
+            messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
-                ],
+            ]
+            timer = OpenAICallTimer(operation="tribunal_evaluate", model="gpt-4o", messages=messages, extra={"response_format": "TribunalVerdict", "temperature": 0.2})
+            completion = await self.client.beta.chat.completions.parse(
+                model="gpt-4o",
+                messages=messages,
                 response_format=TribunalVerdict,
-                temperature=0.2 # low temp for consistent tagging
+                temperature=0.2
             )
+            timer.finish(response=completion)
             return completion.choices[0].message.parsed
             
         except Exception as e:
             print(f"❌ Tribunal Error: {e}")
+            timer.finish(error=e)
             return self._fail_open(f"LLM Error: {str(e)}")
 
     def _fail_open(self, reason: str) -> TribunalVerdict:

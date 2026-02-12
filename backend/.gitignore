@@ -1,0 +1,13 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Environment variables
+.env
+
+# Log files (keep directory, ignore contents)
+logs/*.log

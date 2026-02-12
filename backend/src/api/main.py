@@ -2,12 +2,18 @@ import os
 from dotenv import load_dotenv
 load_dotenv() # Load .env file
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import io
 from pypdf import PdfReader
+from src.services.db_persistence import (
+    resolve_user, save_jd_extraction, save_cv_extraction, save_analysis_report,
+    list_jd_extractions, get_jd_extraction, get_cv_extraction, list_cvs_for_jd,
+    list_reports_for_jd, get_report_detail,
+    update_jd_title, update_jd_extracted_json, delete_jd_extraction, delete_cv_extraction,
+)
 
 from src.core.models import (
     CandidateProfile, JobDescription, CandidateSkill, ComputedStats, 
@@ -69,6 +75,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Log ALL API requests and responses
+from src.utils.api_logger import APIRequestLogger
+app.add_middleware(APIRequestLogger)
+
 class MatchRequest(BaseModel):
     candidate: CandidateProfile
     job_description: JobDescription
@@ -88,14 +98,16 @@ metadata_extractor = MetadataExtractor()
 
 
 @app.post("/extract/resume", response_model=CandidateProfile)
-async def extract_resume(payload: ExtractRequest):
+async def extract_resume(payload: ExtractRequest, x_user_name: Optional[str] = Header(None)):
     # 1. Try LLM Extraction First
     llm_profile = None
+    model_used = None
     if os.getenv("OPENAI_API_KEY"):
         try:
             from src.extraction.llm_extractor import LLMExtractor
             llm = LLMExtractor()
             llm_profile = await llm.extract_resume(payload.text)
+            model_used = "gpt-4o-2024-08-06"
             
             # GUARDRAIL: Document Validation
             if not llm_profile.is_valid:
@@ -120,34 +132,60 @@ async def extract_resume(payload: ExtractRequest):
     merged_profile = merge_profiles(llm_profile, keyword_profile)
     
     if merged_profile:
+        # Persist to DB
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        cv_db_id = save_cv_extraction(
+            raw_text=payload.text,
+            extracted_json=merged_profile.model_dump(),
+            uploaded_by=user_id,
+            model_used=model_used,
+            is_valid=merged_profile.is_valid,
+        )
+        if cv_db_id:
+            print(f"💾 CV extraction saved to DB: {cv_db_id}")
         return merged_profile
     else:
         raise HTTPException(status_code=503, detail="Both Extractors Failed or Not Initialized")
 
 @app.post("/extract/jd", response_model=JobDescription)
-async def extract_jd(payload: ExtractRequest):
+async def extract_jd(payload: ExtractRequest, x_user_name: Optional[str] = Header(None)):
+    jd = None
+    model_used = None
     # UNIFIED PIPELINE APPROACH
     if hasattr(app.state, 'pipeline') and app.state.pipeline:
         try:
             jd = await app.state.pipeline.extract_jd(payload.text)
-            return jd
+            model_used = "gpt-4o-2024-08-06"
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Pipeline Extraction Failed: {e}")
     else:
         # Fallback if pipeline not initialized (e.g. no DB)
-        # Should probably warn or fail, but let's try manual FlashText if available
         if not extractor_instance:
              raise HTTPException(status_code=503, detail="Extractor/Pipeline not initialized")
              
         try:
             result = extractor_instance.extract(payload.text)
             jd = map_entities_to_jd(payload.text, result.entities)
-            return jd
+            model_used = "flashtext"
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    # Persist to DB
+    if jd:
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        jd_db_id = save_jd_extraction(
+            raw_text=payload.text,
+            extracted_json=jd.model_dump(),
+            uploaded_by=user_id,
+            model_used=model_used,
+            is_valid=jd.is_valid,
+        )
+        if jd_db_id:
+            print(f"💾 JD extraction saved to DB: {jd_db_id}")
+    return jd
+
 @app.post("/extract/resume/file", response_model=CandidateProfile)
-async def extract_resume_file(file: UploadFile = File(...)):
+async def extract_resume_file(file: UploadFile = File(...), x_user_name: Optional[str] = Header(None)):
     if not extractor_instance and not os.getenv("OPENAI_API_KEY"):
          raise HTTPException(status_code=503, detail="Extractor not initialized")
     
@@ -171,11 +209,13 @@ async def extract_resume_file(file: UploadFile = File(...)):
               
         # 1. Try LLM Extraction First
         llm_profile = None
+        model_used = None
         if os.getenv("OPENAI_API_KEY"):
             try:
                 from src.extraction.llm_extractor import LLMExtractor
                 llm = LLMExtractor()
                 llm_profile = await llm.extract_resume(text)
+                model_used = "gpt-4o-2024-08-06"
                 
                 print(f"🧐 DEBUG: LLM Extraction Complete. Valid: {llm_profile.is_valid}, Error: {llm_profile.parsing_error}")
                 print(f"🧐 DEBUG: LLM Profile Dump: {llm_profile.model_dump_json(exclude={'timeline', 'skills'})}") # minimalist dump
@@ -201,6 +241,7 @@ async def extract_resume_file(file: UploadFile = File(...)):
                 print(f"⚠️ FlashText Failed ({e})")
 
         # 3. Merge Strategies
+        final_profile = None
         if llm_profile and keyword_profile:
             # Merge keyword skills into LLM profile if missing
             print("🔗 Merging LLM and FlashText Results...")
@@ -218,14 +259,28 @@ async def extract_resume_file(file: UploadFile = File(...)):
                     count_added += 1
                     
             print(f"✅ Merged: Added {count_added} skills from FlashText to LLM result.")
-            return llm_profile
+            final_profile = llm_profile
             
         elif llm_profile:
-            return llm_profile
+            final_profile = llm_profile
         elif keyword_profile:
-            return keyword_profile
+            final_profile = keyword_profile
         else:
             raise HTTPException(status_code=503, detail="Both Extractors Failed or Not Initialized")
+
+        # Persist to DB
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        cv_db_id = save_cv_extraction(
+            raw_text=text,
+            extracted_json=final_profile.model_dump(),
+            uploaded_by=user_id,
+            filename=file.filename,
+            model_used=model_used,
+            is_valid=final_profile.is_valid,
+        )
+        if cv_db_id:
+            print(f"💾 CV extraction saved to DB: {cv_db_id}")
+        return final_profile
             
     except HTTPException:
         raise
@@ -233,7 +288,7 @@ async def extract_resume_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
 @app.post("/extract/jd/file", response_model=JobDescription)
-async def extract_jd_file(file: UploadFile = File(...)):
+async def extract_jd_file(file: UploadFile = File(...), x_user_name: Optional[str] = Header(None)):
     try:
         content = await file.read()
         
@@ -252,43 +307,337 @@ async def extract_jd_file(file: UploadFile = File(...)):
     except Exception as e:
          raise HTTPException(status_code=500, detail=f"File reading failed: {e}")
 
+    jd = None
+    model_used = None
     # UNIFIED PIPELINE APPROACH
     if hasattr(app.state, 'pipeline') and app.state.pipeline:
         try:
             jd = await app.state.pipeline.extract_jd(text)
-            return jd
+            model_used = "gpt-4o-2024-08-06"
         except Exception as e:
              raise HTTPException(status_code=500, detail=f"Pipeline Extraction Failed: {e}")
+    else:
+        # Fallback
+        if not extractor_instance:
+            raise HTTPException(status_code=503, detail="Extractor not initialized")
 
-    # Fallback
-    if not extractor_instance:
-        raise HTTPException(status_code=503, detail="Extractor not initialized")
+        try:
+            result = extractor_instance.extract(text)
+            jd = map_entities_to_jd(text, result.entities)
+            model_used = "flashtext"
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
-    try:
-        result = extractor_instance.extract(text)
-        jd = map_entities_to_jd(text, result.entities)
-        return jd
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+    # Persist to DB
+    if jd:
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        jd_db_id = save_jd_extraction(
+            raw_text=text,
+            extracted_json=jd.model_dump(),
+            uploaded_by=user_id,
+            filename=file.filename,
+            model_used=model_used,
+            is_valid=jd.is_valid,
+        )
+        if jd_db_id:
+            print(f"💾 JD extraction saved to DB: {jd_db_id}")
+    return jd
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "version": "0.1.0"}
 
+# ---------------------------------------------------------------------------
+# History / Browse Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/jds")
+async def get_all_jds(limit: int = 50, offset: int = 0):
+    """List all uploaded JDs (newest first) with report counts."""
+    rows = list_jd_extractions(limit=limit, offset=offset)
+    return {"jds": rows, "count": len(rows)}
+
+@app.get("/jds/{jd_id}")
+async def get_jd_detail(jd_id: str):
+    """Get full detail of a single JD extraction."""
+    row = get_jd_extraction(jd_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="JD not found")
+    return row
+
+@app.get("/jds/{jd_id}/cvs")
+async def get_cvs_for_jd(jd_id: str):
+    """List all CVs that have been analysed against this JD, with latest scores."""
+    rows = list_cvs_for_jd(jd_id)
+    return {"jd_id": jd_id, "cvs": rows, "count": len(rows)}
+
+@app.get("/jds/{jd_id}/reports")
+async def get_reports_for_jd(jd_id: str):
+    """List all analysis reports for this JD (newest first), including candidate name and score."""
+    rows = list_reports_for_jd(jd_id)
+    return {"jd_id": jd_id, "reports": rows, "count": len(rows)}
+
+@app.get("/cvs/{cv_id}")
+async def get_cv_detail(cv_id: str):
+    """Get full detail of a single CV extraction."""
+    row = get_cv_extraction(cv_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return row
+
+@app.get("/reports/{report_id}")
+async def get_single_report(report_id: str):
+    """Get full detail of a single analysis report."""
+    row = get_report_detail(report_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return row
+
+# ---------------------------------------------------------------------------
+# JD Management (Rename, Delete, Upload CVs)
+# ---------------------------------------------------------------------------
+
+class RenameJDRequest(BaseModel):
+    title: str
+
+@app.patch("/jds/{jd_id}")
+async def rename_jd(jd_id: str, payload: RenameJDRequest):
+    """Rename a JD (update job_metadata.title)."""
+    ok = update_jd_title(jd_id, payload.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="JD not found or update failed")
+    return {"status": "ok", "jd_id": jd_id, "new_title": payload.title}
+
+@app.put("/jds/{jd_id}/extracted")
+async def update_jd_json(jd_id: str, payload: JobDescription):
+    """Replace the full extracted JD JSON (after editing requirements, metadata, etc.)."""
+    ok = update_jd_extracted_json(jd_id, payload.model_dump())
+    if not ok:
+        raise HTTPException(status_code=404, detail="JD not found or update failed")
+    return {"status": "ok", "jd_id": jd_id}
+
+@app.delete("/jds/{jd_id}")
+async def delete_jd(jd_id: str):
+    """Delete a JD and all its linked reports and orphan CVs."""
+    print(f"🗑️ DELETE /jds/{jd_id} requested")
+    ok = delete_jd_extraction(jd_id)
+    if not ok:
+        print(f"⚠️ DELETE /jds/{jd_id} failed")
+        raise HTTPException(status_code=404, detail="JD not found or delete failed")
+    print(f"✅ DELETE /jds/{jd_id} succeeded")
+    return {"status": "deleted", "jd_id": jd_id}
+
+@app.delete("/cvs/{cv_id}")
+async def delete_cv(cv_id: str):
+    """Delete a CV and its linked analysis reports."""
+    print(f"🗑️ DELETE /cvs/{cv_id} requested")
+    ok = delete_cv_extraction(cv_id)
+    if not ok:
+        print(f"⚠️ DELETE /cvs/{cv_id} failed")
+        raise HTTPException(status_code=404, detail="CV not found or delete failed")
+    print(f"✅ DELETE /cvs/{cv_id} succeeded")
+    return {"status": "deleted", "cv_id": cv_id}
+
+@app.post("/jds/{jd_id}/upload-cvs")
+async def upload_cvs_for_jd(
+    jd_id: str,
+    files: List[UploadFile] = File(...),
+    x_user_name: Optional[str] = Header(None),
+):
+    """
+    Upload one or more CV files against an existing JD.
+    Each file is extracted, saved, and then matched against the JD.
+    Returns a summary of all processed CVs with their scores.
+    """
+    # Verify JD exists
+    jd_row = get_jd_extraction(jd_id)
+    if not jd_row:
+        raise HTTPException(status_code=404, detail="JD not found")
+
+    user_id = resolve_user(x_user_name) if x_user_name else None
+    jd_obj = JobDescription.model_validate(jd_row["extracted_json"])
+
+    results = []
+    for file in files:
+        entry = {"filename": file.filename, "status": "error", "score": None, "cv_id": None, "report_id": None, "error": None}
+        try:
+            content = await file.read()
+
+            # 1. Extract text from file (PDF, DOCX, TXT) via guardrails
+            validation = guard_service.validate_upload(content, file.filename, DocumentType.RESUME)
+            text = validation.extracted_text
+
+            if not text or len(text.strip()) < 50:
+                entry["error"] = validation.rejection_reason or "Could not extract sufficient text from file"
+                results.append(entry)
+                continue
+
+            # 2. LLM extraction
+            llm_profile = None
+            model_used = None
+            if os.getenv("OPENAI_API_KEY"):
+                try:
+                    from src.extraction.llm_extractor import LLMExtractor
+                    llm = LLMExtractor()
+                    llm_profile = await llm.extract_resume(text)
+                    model_used = "gpt-4o-2024-08-06"
+                except Exception as e:
+                    print(f"⚠️ LLM extraction failed for {file.filename}: {e}")
+
+            # 3. FlashText extraction
+            keyword_profile = None
+            if extractor_instance:
+                try:
+                    result = extractor_instance.extract(text)
+                    keyword_profile = map_entities_to_candidate(text, result.entities)
+                except Exception as e:
+                    print(f"⚠️ FlashText failed for {file.filename}: {e}")
+
+            # 4. Merge
+            final_profile = None
+            if llm_profile and keyword_profile:
+                existing_ids = {normalize_skill(s.skill_id) for s in llm_profile.skills}
+                for k_skill in keyword_profile.skills:
+                    if normalize_skill(k_skill.skill_id) not in existing_ids:
+                        llm_profile.skills.append(k_skill)
+                        existing_ids.add(normalize_skill(k_skill.skill_id))
+                final_profile = llm_profile
+            elif llm_profile:
+                final_profile = llm_profile
+            elif keyword_profile:
+                final_profile = keyword_profile
+
+            if not final_profile:
+                entry["error"] = "Extraction failed for this file"
+                results.append(entry)
+                continue
+
+            # 5. Save CV to DB
+            cv_db_id = save_cv_extraction(
+                raw_text=text,
+                extracted_json=final_profile.model_dump(),
+                uploaded_by=user_id,
+                filename=file.filename,
+                model_used=model_used,
+                is_valid=final_profile.is_valid,
+            )
+            entry["cv_id"] = cv_db_id
+
+            # 6. Run match and save report
+            if cv_db_id:
+                match_result = await calculate_match(final_profile, jd_obj)
+                report_id = save_analysis_report(
+                    jd_id=jd_id,
+                    cv_id=cv_db_id,
+                    score=match_result.score,
+                    analysis_json=match_result.model_dump(),
+                    run_by=user_id,
+                )
+                entry["report_id"] = report_id
+                entry["score"] = match_result.score
+                entry["status"] = "success"
+                entry["candidate_name"] = final_profile.candidate_metadata.name if final_profile.candidate_metadata else None
+            else:
+                entry["error"] = "Failed to save CV to database"
+
+        except Exception as e:
+            entry["error"] = str(e)
+
+        results.append(entry)
+
+    return {
+        "jd_id": jd_id,
+        "processed": len(results),
+        "successful": sum(1 for r in results if r["status"] == "success"),
+        "results": results,
+    }
+
+class ReanalyseRequest(BaseModel):
+    jd_id: str
+    cv_id: str
+
+@app.post("/reanalyse", response_model=MatchResult)
+async def reanalyse(payload: ReanalyseRequest, x_user_name: Optional[str] = Header(None)):
+    """Re-run analysis for an existing JD + CV pair using their stored extracted data."""
+    jd_row = get_jd_extraction(payload.jd_id)
+    if not jd_row:
+        raise HTTPException(status_code=404, detail="JD not found")
+    cv_row = get_cv_extraction(payload.cv_id)
+    if not cv_row:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    try:
+        candidate = CandidateProfile.model_validate(cv_row["extracted_json"])
+    except Exception as e:
+        print(f"⚠️ Reanalyse: CV validation failed for cv_id={payload.cv_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"CV data validation failed: {str(e)}")
+
+    try:
+        jd = JobDescription.model_validate(jd_row["extracted_json"])
+    except Exception as e:
+        print(f"⚠️ Reanalyse: JD validation failed for jd_id={payload.jd_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"JD data validation failed: {str(e)}")
+
+    try:
+        result = await calculate_match(candidate, jd)
+
+        # Persist new report
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        report_id = save_analysis_report(
+            jd_id=payload.jd_id,
+            cv_id=payload.cv_id,
+            score=result.score,
+            analysis_json=result.model_dump(),
+            run_by=user_id,
+        )
+        if report_id:
+            print(f"💾 Re-analysis report saved to DB: {report_id}")
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Re-analysis failed: {str(e)}")
+
 @app.post("/match", response_model=MatchResult)
-async def match_profiles(payload: MatchRequest):
+async def match_profiles(payload: MatchRequest, x_user_name: Optional[str] = Header(None)):
     """
     Deterministic matching endpoint.
     """
     try:
-        # Normalize inputs on the fly? 
-        # Ideally inputs are pre-normalized, but we can do a pass here if needed.
-        # But our engine handles JD normalization. Candidate skills are assumed structured.
-        
         result = await calculate_match(payload.candidate, payload.job_description)
+
+        # Persist to DB: save JD, CV, and analysis report
+        user_id = resolve_user(x_user_name) if x_user_name else None
+        jd_db_id = save_jd_extraction(
+            raw_text="(submitted via /match)",
+            extracted_json=payload.job_description.model_dump(),
+            uploaded_by=user_id,
+            model_used="pre-extracted",
+            is_valid=payload.job_description.is_valid,
+        )
+        cv_db_id = save_cv_extraction(
+            raw_text="(submitted via /match)",
+            extracted_json=payload.candidate.model_dump(),
+            uploaded_by=user_id,
+            model_used="pre-extracted",
+            is_valid=payload.candidate.is_valid,
+        )
+        if jd_db_id and cv_db_id:
+            report_id = save_analysis_report(
+                jd_id=jd_db_id,
+                cv_id=cv_db_id,
+                score=result.score,
+                analysis_json=result.model_dump(),
+                run_by=user_id,
+            )
+            if report_id:
+                print(f"💾 Analysis report saved to DB: {report_id}")
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

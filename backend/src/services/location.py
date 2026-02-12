@@ -2,6 +2,7 @@ import os
 import json
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+from src.utils.openai_logger import OpenAICallTimer
 
 class LocationVerdict(BaseModel):
     is_within_range: bool
@@ -39,16 +40,20 @@ class LocationService:
         """
 
         try:
-            completion = await self.client.beta.chat.completions.parse(
-                model="gpt-4o-mini", # Cheap model is fine for geography
-                messages=[
+            messages = [
                     {"role": "system", "content": "You are a Geography Distance Calculator. Be realistic about commuting."},
                     {"role": "user", "content": prompt}
-                ],
+            ]
+            timer = OpenAICallTimer(operation="location_check", model="gpt-4o-mini", messages=messages, extra={"response_format": "LocationVerdict", "temperature": 0.0})
+            completion = await self.client.beta.chat.completions.parse(
+                model="gpt-4o-mini",
+                messages=messages,
                 response_format=LocationVerdict,
                 temperature=0.0
             )
+            timer.finish(response=completion)
             return completion.choices[0].message.parsed
         except Exception as e:
             print(f"⚠️ Location Check Error: {e}")
+            timer.finish(error=e)
             return LocationVerdict(is_within_range=True, distance_estimate="Error", reason="Location check failed.")

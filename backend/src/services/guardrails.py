@@ -29,13 +29,29 @@ class DocumentGuardService:
         Validates file type (Magic Bytes) and Content (Keyword Signals).
         """
         # ---------------------------------------------------------
-        # Step A: Magic Byte Check
+        # Step A: Magic Byte Check (with filename fallback)
         # ---------------------------------------------------------
+        mime_type = None
         try:
             mime_type = magic.from_buffer(file_bytes[:2048], mime=True)
             print(f"🕵️ Guardrails: Detected MIME: {mime_type} for {filename}")
         except Exception as e:
-            return ValidationResult(is_valid=False, rejection_reason=f"MIME check failed: {e}")
+            print(f"⚠️ Guardrails: magic.from_buffer failed ({e}), falling back to filename extension")
+
+        # Fallback: infer MIME from filename extension when libmagic is unavailable
+        if not mime_type and filename:
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            ext_map = {
+                "pdf": "application/pdf",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "txt": "text/plain",
+            }
+            mime_type = ext_map.get(ext)
+            if mime_type:
+                print(f"🕵️ Guardrails: Inferred MIME from extension: {mime_type} for {filename}")
+
+        if not mime_type:
+            return ValidationResult(is_valid=False, rejection_reason="Could not determine file type. Only PDF, DOCX, TXT allowed.")
 
         allowed_mimes = {
             "application/pdf", 

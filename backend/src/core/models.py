@@ -105,7 +105,7 @@ class Requirement(BaseModel):
     skill_id: Optional[str] = Field(None, description="Name of the hard technical skill (e.g. 'Python', 'React').")
     priority: Literal["must_have", "nice_to_have"] = Field(..., description="Classification: 'must_have' is default. 'nice_to_have' if text says 'preferred', 'plus', 'bonus', 'desired'.")
     level: Literal["junior", "mid", "senior"] = Field("mid", description="Required expertise level for this skill.")
-    is_hard_filter: bool = Field(True, description="If True (and priority is must_have), missing this skill is a dealbreaker.")
+    is_hard_filter: bool = Field(False, description="If True (and priority is must_have), missing this skill is a dealbreaker. Default False so scores are not auto-capped.")
     min_years: int = Field(0, description="Minimum years of experience required.")
     context: Optional[str] = None
     logic: Optional[Literal["one_of"]] = None
