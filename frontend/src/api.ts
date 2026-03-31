@@ -423,6 +423,15 @@ export async function renameJD(jdId: string, title: string): Promise<{ status: s
     return response.json();
 }
 
+export async function fetchJDCVCount(jdId: string): Promise<{ jd_id: string; cv_count: number }> {
+    const response = await fetch(`${API_URL}/jds/${jdId}/cv-count`);
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }));
+        throw new Error(err.detail || response.statusText);
+    }
+    return response.json();
+}
+
 export async function deleteJD(jdId: string): Promise<{ status: string }> {
     const response = await fetch(`${API_URL}/jds/${jdId}`, {
         method: "DELETE",

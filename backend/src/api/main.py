@@ -11,7 +11,7 @@ from pypdf import PdfReader
 from src.services.db_persistence import (
     resolve_user, save_jd_extraction, save_cv_extraction, save_analysis_report,
     list_jd_extractions, get_jd_extraction, get_cv_extraction, list_cvs_for_jd,
-    list_reports_for_jd, get_report_detail,
+    count_cvs_for_jd, list_reports_for_jd, get_report_detail,
     update_jd_title, update_jd_extracted_json, delete_jd_extraction, delete_cv_extraction,
 )
 
@@ -418,9 +418,18 @@ async def update_jd_json(jd_id: str, payload: JobDescription):
         raise HTTPException(status_code=404, detail="JD not found or update failed")
     return {"status": "ok", "jd_id": jd_id}
 
+@app.get("/jds/{jd_id}/cv-count")
+async def get_jd_cv_count(jd_id: str):
+    """Return the number of CVs linked to a JD (for pre-delete confirmation)."""
+    jd_row = get_jd_extraction(jd_id)
+    if not jd_row:
+        raise HTTPException(status_code=404, detail="JD not found")
+    cv_count = count_cvs_for_jd(jd_id)
+    return {"jd_id": jd_id, "cv_count": cv_count}
+
 @app.delete("/jds/{jd_id}")
 async def delete_jd(jd_id: str):
-    """Delete a JD and all its linked reports and orphan CVs."""
+    """Delete a JD and all its linked reports and associated CVs."""
     print(f"🗑️ DELETE /jds/{jd_id} requested")
     ok = delete_jd_extraction(jd_id)
     if not ok:

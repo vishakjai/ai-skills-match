@@ -58,7 +58,7 @@ def _safe_serialize(obj: Any) -> Any:
     return str(obj)
 
 
-def _truncate(text: str, max_len: int = 500) -> str:
+def _truncate(text: str, max_len: int = 4000) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + f"... [truncated, total {len(text)} chars]"
@@ -74,7 +74,7 @@ class OpenAICallTimer:
         self.messages = messages
         self.extra = extra or {}
         self._start = time.perf_counter()
-        self._timestamp = datetime.now(timezone.utc).isoformat()
+        self._timestamp = datetime.now().astimezone().isoformat()
 
     # ------------------------------------------------------------------
     # Call this after you receive the OpenAI response
@@ -142,15 +142,15 @@ class OpenAICallTimer:
         for msg in self.messages:
             role = msg.get("role", "?")
             content = msg.get("content", "")
-            lines.append(f"  [{role}] {_truncate(content, 300)}")
+            lines.append(f"  [{role}] {_truncate(content, 1000)}")
 
         # Response summary
         lines.append("")
         lines.append("  --- RESPONSE (parsed) ---")
         if parsed:
             pretty = json.dumps(parsed, indent=2, default=str, ensure_ascii=False)
-            # Cap formatted output at 2000 chars
-            lines.append(f"  {_truncate(pretty, 2000)}")
+            # Cap formatted output at 20000 chars
+            lines.append(f"  {_truncate(pretty, 20000)}")
         else:
             lines.append("  (no parsed response)")
 

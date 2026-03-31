@@ -52,7 +52,7 @@ export const JDConfigurationView: React.FC<JDConfigurationViewProps> = ({ jd, on
             skill_id: newSkillName.trim(), // In a real app we'd map this to ID
             priority: 'must_have' as const,
             level: 'mid' as const,
-            is_hard_filter: false,
+            is_hard_filter: true,
             min_years: 0
         };
 
@@ -168,7 +168,7 @@ export const JDConfigurationView: React.FC<JDConfigurationViewProps> = ({ jd, on
                         id={req.req_id}
                         skillName={req.skill_id || req.req_id}
                         level={req.level || 'mid'}
-                        isHardFilter={req.is_hard_filter ?? false}
+                        isHardFilter={req.is_hard_filter ?? true}
                         priority={req.priority}
                         onChange={handleReqChange}
                         onDelete={handleDeleteSkill}

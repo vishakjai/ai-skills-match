@@ -157,12 +157,23 @@ def save_analysis_report(
     analysis_json: dict,
     run_by: Optional[str] = None,
 ) -> Optional[str]:
-    """Persist a match/analysis report. Returns the new row UUID."""
+    """Persist a match/analysis report (upsert).
+    Deletes any previous report for the same jd_id+cv_id pair first,
+    so only the latest report is kept per CV-JD combination.
+    Returns the new row UUID."""
     conn = _get_conn()
     if not conn:
         return None
     try:
         cur = conn.cursor()
+        # Remove previous report(s) for this JD+CV pair
+        cur.execute(
+            "DELETE FROM analysis_reports WHERE jd_id = %s AND cv_id = %s",
+            (jd_id, cv_id),
+        )
+        deleted = cur.rowcount
+        if deleted:
+            print(f"🔄 Replaced {deleted} old report(s) for jd={jd_id} cv={cv_id}")
         cur.execute(
             """
             INSERT INTO analysis_reports (jd_id, cv_id, run_by, score, analysis_json)
@@ -278,6 +289,27 @@ def get_cv_extraction(cv_id: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # READ: CVs linked to a JD (via analysis_reports)
 # ---------------------------------------------------------------------------
+
+def count_cvs_for_jd(jd_id: str) -> int:
+    """Return the number of distinct CVs linked to a JD via analysis_reports."""
+    conn = _get_conn()
+    if not conn:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(DISTINCT cv_id) FROM analysis_reports WHERE jd_id = %s",
+            (jd_id,),
+        )
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return count
+    except Exception as e:
+        print(f"⚠️ DB count_cvs_for_jd error: {e}")
+        conn.close()
+        return 0
+
 
 def list_cvs_for_jd(jd_id: str) -> List[dict]:
     """Return all CVs that have been analysed against a given JD, with latest score."""
@@ -444,10 +476,10 @@ def update_jd_title(jd_id: str, new_title: str) -> bool:
 
 def delete_jd_extraction(jd_id: str) -> bool:
     """
-    Delete a JD and cascade-delete all analysis_reports linked to it,
-    plus any cv_extractions that are ONLY linked to this JD (orphan cleanup).
-    The DB schema has ON DELETE CASCADE on analysis_reports.jd_id, so deleting
-    the JD row automatically removes its reports.
+    Delete a JD and all associated data:
+      - All analysis_reports for this JD (via CASCADE)
+      - All cv_extractions that were linked to this JD
+      - The JD itself
     """
     conn = _get_conn()
     if not conn:
@@ -463,34 +495,28 @@ def delete_jd_extraction(jd_id: str) -> bool:
             conn.close()
             return False
 
-        # 1. Find CV IDs that are ONLY linked to this JD (before cascade removes reports)
+        # 1. Collect ALL CV IDs linked to this JD (before cascade removes reports)
         cur.execute(
-            """
-            SELECT DISTINCT ar.cv_id
-            FROM analysis_reports ar
-            WHERE ar.jd_id = %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM analysis_reports ar2
-                  WHERE ar2.cv_id = ar.cv_id AND ar2.jd_id != %s
-              )
-            """,
-            (jd_id, jd_id),
+            "SELECT DISTINCT cv_id FROM analysis_reports WHERE jd_id = %s",
+            (jd_id,),
         )
-        orphan_cv_ids = [row[0] for row in cur.fetchall()]
-        print(f"🗑️ delete_jd: JD={jd_id}, orphan CVs={len(orphan_cv_ids)}")
+        cv_ids = [row[0] for row in cur.fetchall()]
+        print(f"🗑️ delete_jd: JD={jd_id}, associated CVs={len(cv_ids)}")
 
         # 2. Delete the JD — CASCADE auto-deletes its analysis_reports
         cur.execute("DELETE FROM jd_extractions WHERE id = %s", (jd_id,))
         jd_deleted = cur.rowcount > 0
         print(f"🗑️ JD row deleted: {jd_deleted}")
 
-        # 3. Clean up orphan CVs (their reports were already cascade-deleted)
-        if orphan_cv_ids:
+        # 3. Delete associated CVs
+        #    Their reports for THIS JD are already gone (cascade).
+        #    Reports for OTHER JDs will also cascade-delete when the CV is removed.
+        if cv_ids:
             cur.execute(
-                "DELETE FROM cv_extractions WHERE id = ANY(%s)",
-                (orphan_cv_ids,),
+                "DELETE FROM cv_extractions WHERE id = ANY(%s::uuid[])",
+                ([str(c) for c in cv_ids],),
             )
-            print(f"🗑️ Deleted {cur.rowcount} orphan CVs")
+            print(f"🗑️ Deleted {cur.rowcount} associated CVs")
 
         conn.commit()
         cur.close()

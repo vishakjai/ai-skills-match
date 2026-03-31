@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   fetchJDs, fetchCVsForJD, fetchReportsForJD, fetchReportDetail, fetchJDDetail,
   reanalyse, renameJD, deleteJD, deleteCV, uploadCVsForJD, extractJD, extractJDFile,
-  updateJDExtracted,
+  updateJDExtracted, fetchJDCVCount,
 } from './api';
 import type {
   JDSummary, CVForJD, ReportSummary, ReportDetail, JDDetail,
@@ -88,7 +88,7 @@ function JDListView({ onSelectJD }: { onSelectJD: (id: string) => void }) {
   const [jdText, setJdText] = useState('');
   const [addingJD, setAddingJD] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ jdId: string; cvCount: number; loading: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadJDs = () => {
@@ -134,12 +134,26 @@ function JDListView({ onSelectJD }: { onSelectJD: (id: string) => void }) {
     }
   };
 
-  const handleDeleteJD = async (jdId: string) => {
+  const handleDeleteClick = async (jdId: string) => {
+    setError(null);
+    setConfirmDelete({ jdId, cvCount: 0, loading: true });
+    try {
+      const { cv_count } = await fetchJDCVCount(jdId);
+      setConfirmDelete({ jdId, cvCount: cv_count, loading: false });
+    } catch (e: any) {
+      setError(`Failed to check CVs: ${e.message}`);
+      setConfirmDelete(null);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!confirmDelete) return;
+    const { jdId } = confirmDelete;
     setDeletingId(jdId);
     setError(null);
     try {
       await deleteJD(jdId);
-      setConfirmDeleteId(null);
+      setConfirmDelete(null);
       loadJDs();
     } catch (e: any) {
       setError(`Delete failed: ${e.message}`);
@@ -233,36 +247,65 @@ function JDListView({ onSelectJD }: { onSelectJD: (id: string) => void }) {
                     <div className="text-2xl font-black text-white">{jd.report_count}</div>
                     <div className="text-[10px] text-slate-500 uppercase font-bold">Reports</div>
                   </div>
-                  {confirmDeleteId === jd.id ? (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleDeleteJD(jd.id)}
-                        disabled={deletingId === jd.id}
-                        className="text-xs px-3 py-1.5 rounded-lg font-bold bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/40 transition-all disabled:opacity-50"
-                      >
-                        {deletingId === jd.id ? '...' : 'Confirm'}
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-white transition-colors"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(jd.id); }}
-                      className="text-xs px-2 py-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all border border-transparent hover:border-red-500/20"
-                      title="Delete JD"
-                    >
-                      🗑️
-                    </button>
-                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteClick(jd.id); }}
+                    className="text-xs px-2 py-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all border border-transparent hover:border-red-500/20"
+                    title="Delete JD"
+                  >
+                    🗑️
+                  </button>
                   <button onClick={() => onSelectJD(jd.id)} className="text-slate-600 group-hover:text-emerald-400 transition-colors text-xl">→</button>
                 </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-red-500/30 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl shadow-red-900/20">
+            {confirmDelete.loading ? (
+              <div className="text-center py-4">
+                <div className="text-2xl mb-2 animate-spin inline-block">⏳</div>
+                <p className="text-slate-400 text-sm">Checking associated CVs...</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 mb-4">
+                  <span className="text-3xl">⚠️</span>
+                  <h3 className="text-lg font-bold text-white">Delete Job Description?</h3>
+                </div>
+                {confirmDelete.cvCount > 0 ? (
+                  <p className="text-slate-300 text-sm mb-5 leading-relaxed">
+                    This JD has <span className="font-bold text-red-400">{confirmDelete.cvCount} CV{confirmDelete.cvCount > 1 ? 's' : ''}</span> uploaded against it.
+                    Deleting this JD will also <span className="font-bold text-red-400">permanently remove</span> all associated CVs and their analysis reports.
+                  </p>
+                ) : (
+                  <p className="text-slate-300 text-sm mb-5 leading-relaxed">
+                    This JD has no CVs uploaded against it. Are you sure you want to delete it?
+                  </p>
+                )}
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setConfirmDelete(null)}
+                    disabled={deletingId !== null}
+                    className="px-4 py-2 rounded-lg text-sm font-bold text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeleteConfirm}
+                    disabled={deletingId !== null}
+                    className="px-4 py-2 rounded-lg text-sm font-bold bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/40 transition-all disabled:opacity-50"
+                  >
+                    {deletingId ? '⏳ Deleting...' : confirmDelete.cvCount > 0 ? `Yes, Delete JD & ${confirmDelete.cvCount} CV${confirmDelete.cvCount > 1 ? 's' : ''}` : 'Yes, Delete'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

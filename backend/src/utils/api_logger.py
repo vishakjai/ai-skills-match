@@ -74,7 +74,7 @@ class APIRequestLogger(BaseHTTPMiddleware):
             return await call_next(request)
 
         start = time.perf_counter()
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now().astimezone().isoformat()
 
         method = request.method
         query = str(request.url.query) if request.url.query else ""
